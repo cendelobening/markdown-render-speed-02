@@ -804,16 +804,26 @@ function parseInline(src, refs) {
     }
     // --- extended autolinks: www. / scheme / email ---
     if (c === 119 || c === 104 || c === 102 || isAsciiAlnum(c)) {
-      // www. or scheme:// or scheme:email -- only at a word start-ish position
-      const prev = i > 0 ? s[i - 1] : '';
-      const hasUnderscoreOpener = delims.some(idx => nodes[idx].ch === '_' && nodes[idx].open);
-      const hasActiveBracket = brackets.some(idx => nodes[idx].active);
-      const ext = scanExtendedAutolink(s, i, prev, hasUnderscoreOpener, hasActiveBracket);
-      if (ext) {
-        pushNode({ k: 6, href: ext[0], title: null, img: false, ext: true });
-        pushNode({ k: 0, s: ext[1] });
-        pushNode({ k: 9 });
-        i = ext[2]; continue;
+      // www. or scheme:// or scheme:email -- only at a word start-ish position.
+      // Fast pre-check: scanExtendedAutolink returns null when prev is
+      // alphanumeric (mid-word), so skip the flag scans and the call there.
+      let prevOk = false;
+      if (i === 0) prevOk = true;
+      else if (!isAsciiAlnum(s.charCodeAt(i - 1))) {
+        const pv = s[i - 1];
+        prevOk = isUniSpace(pv) || (isUniPunct(pv) && pv !== '.' && pv !== '/' && pv !== ':' && pv !== '@');
+      }
+      if (prevOk) {
+        const prev = i > 0 ? s[i - 1] : '';
+        const hasUnderscoreOpener = delims.some(idx => nodes[idx].ch === '_' && nodes[idx].open);
+        const hasActiveBracket = brackets.some(idx => nodes[idx].active);
+        const ext = scanExtendedAutolink(s, i, prev, hasUnderscoreOpener, hasActiveBracket);
+        if (ext) {
+          pushNode({ k: 6, href: ext[0], title: null, img: false, ext: true });
+          pushNode({ k: 0, s: ext[1] });
+          pushNode({ k: 9 });
+          i = ext[2]; continue;
+        }
       }
       // fall through to plain text
     }
