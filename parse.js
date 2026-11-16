@@ -1595,7 +1595,12 @@ function parseBlocks(lines, endsNl) {
         }
         if (first !== '`' || info.indexOf('`') < 0) {
           finalizeLeaf();
-          leaf = addNode({ t: 'code', fenced: true, fenceChar: first, fenceLen: n, fenceIndent: (cur.col - cur.pre) - (save.col - save.pre), info: info, lines: [] });
+          // Only a backtick fence strips its own indent from its content
+          // lines (marked's indent compensation matches ``` only); a
+          // tilde fence keeps every content line's leading spaces
+          // (doc-29: a ~~~ fence at quote level keeps '  if x').
+          const stripIndent = first === '`' ? (cur.col - cur.pre) - (save.col - save.pre) : 0;
+          leaf = addNode({ t: 'code', fenced: true, fenceChar: first, fenceLen: n, fenceIndent: stripIndent, info: info, lines: [] });
           leafParent = stack[stack.length - 1];
           return true;
         }
@@ -1722,16 +1727,57 @@ function parseBlocks(lines, endsNl) {
               // row (marked quirk, doc-26).
               if (curIsBlank(rd.cur) && !/^ *\t$/.test(curText(rd.cur))) break;
               const rtxt = curText(rd.cur);
+              // A body row is any line that does not start another block:
+              // marked's table regex ends the table at a blank line, an
+              // indented-code indent, a blockquote, an ATX heading, a
+              // fence, a thematic break, a list marker, or an HTML block
+              // start (doc-05: <details> / <summary> lines end the table).
+              // A bare '#' or a fence with backticks later on the line is
+              // not a block start, and a type-7 tag alone on the line does
+              // not end a table either.
               {
                 let qq = 0, indc = 0;
                 while (qq < rtxt.length && (rtxt.charCodeAt(qq) === 32 || rtxt.charCodeAt(qq) === 9)) {
                   if (rtxt.charCodeAt(qq) === 9) indc += 4 - (indc % 4); else indc++;
                   qq++;
                 }
-                if (indc <= 3) {
+                if (indc >= 4 && qq < rtxt.length) break; // indented code
+                // (a whitespace-only line is handled above: only the
+                // tab-padded empty row reaches here, and it is a row)
+                if (indc <= 3 && qq < rtxt.length) {
                   const rc0 = rtxt[qq];
-                  if (rc0 === '>' || rc0 === '#') break;
-                  if (rtxt.startsWith('```', qq) || rtxt.startsWith('~~~', qq)) break;
+                  if (rc0 === '>') break; // blockquote
+                  if (rc0 === '#') {
+                    let p = qq, n = 0;
+                    while (p < rtxt.length && rtxt[p] === '#') { p++; n++; }
+                    if (n >= 1 && n <= 6 && (p >= rtxt.length || rtxt.charCodeAt(p) === 32 || rtxt.charCodeAt(p) === 9)) break;
+                  }
+                  if (rc0 === '`' || rc0 === '~') {
+                    let p = qq;
+                    while (p < rtxt.length && rtxt[p] === rc0) p++;
+                    if (p - qq >= 3 && (rc0 === '~' || rtxt.indexOf('`', p) < 0)) break;
+                  }
+                  if (rc0 === '-' || rc0 === '_' || rc0 === '*') {
+                    let cnt = 0, ok = true;
+                    for (let p = qq; p < rtxt.length; p++) {
+                      const cc = rtxt.charCodeAt(p);
+                      if (cc === 32 || cc === 9) continue;
+                      if (rtxt[p] === rc0) { cnt++; continue; }
+                      ok = false; break;
+                    }
+                    if (ok && cnt >= 3) break; // thematic break
+                  }
+                  if (rc0 === '-' || rc0 === '+' || rc0 === '*') {
+                    const nx = rtxt.charCodeAt(qq + 1);
+                    if (nx === 32 || nx === 9) break; // bullet list marker
+                  } else if (rc0 === '1' && (rtxt[qq + 1] === '.' || rtxt[qq + 1] === ')')) {
+                    const nx = rtxt.charCodeAt(qq + 2);
+                    if (nx === 32 || nx === 9) break; // ordered list marker
+                  }
+                  if (rc0 === '<') {
+                    const hb = htmlBlockStart({ s: rtxt, pos: qq, col: qq, pre: 0 });
+                    if (hb && hb.type !== 7) break;
+                  }
                 }
               }
               const row = splitTableRow(rtxt) || [rtxt.trim()];
