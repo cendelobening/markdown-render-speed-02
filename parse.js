@@ -1034,12 +1034,28 @@ function processEmphasis(nodes, delims) {
       if (o.inside) { oj--; continue; }
       if (o.ch === closer.ch && o.open && groupOf[oIdx] === g) {
         // An inner emphasis recorded for this char lies between this
-        // opener and the closer: the pair is blocked under the rule
-        // above (the closer is inside the inner emphasis's scope). The
-        // closer counts as single only when its run was originally a
-        // single delimiter -- a remainder of a longer run (e.g. the last
-        // '*' of '***' after a strong) does not block (doc-19).
-        if (bottom && o.seq < bottom.seq && closer.n === 1 && closer.origN === 1 && !bottom.openerClose && bottom.bottomOpen && (bottom.use === 2 || o.n >= 2)) break;
+        // opener and the closer: the pair may be blocked (the closer is
+        // inside the inner emphasis's scope). A single closer after an
+        // inner strong never pairs before the bottom (doc-07). A closer
+        // smaller than its opener never pairs before the bottom (it
+        // would waste the opener's strong, **a *b*c* d**). A closer
+        // larger than its opener pairs only when no same-length opener
+        // exists further back (doc-11 skips a lone '*' for a '**'
+        // opener; doc-04 pairs '*' with '**' when no '**' opener
+        // exists). A remainder of a longer run (e.g. the last '*' of
+        // '***' after a strong) never counts as single (doc-19).
+        if (bottom && o.seq < bottom.seq && !bottom.openerClose && bottom.bottomOpen) {
+          if (bottom.use === 2 && closer.n === 1 && closer.origN === 1) break;
+          if (o.n !== closer.n) {
+            if (closer.n < o.n) break;
+            let hasSame = false;
+            for (let k = oj - 1; k >= 0; k--) {
+              const cand = nodes[delims[k]];
+              if (cand.ch === closer.ch && cand.open && groupOf[delims[k]] === g && !cand.inside && cand.n === closer.n) { hasSame = true; break; }
+            }
+            if (hasSame) { oj--; continue; }
+          }
+        }
         // CommonMark rules 9/10: if either delimiter can both open and
         // close, a match is barred when the length sum is a multiple of 3
         // unless both lengths are multiples of 3.
