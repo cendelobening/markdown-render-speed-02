@@ -1868,9 +1868,17 @@ function parseBlocks(lines, endsNl) {
       curStrip(cur, leaf.fenceIndent);
       // Inside a container (list item / blockquote), a leading tab in
       // fenced code content expands to spaces (to the next multiple of 4
-      // from its column); at top level the tab is kept verbatim.
+      // from its column); at top level the tab is kept verbatim. The
+      // column is the original column, except a blockquote contributes
+      // only 2 ('> ') however deep it is nested (doc-05/09: '> > \t'
+      // gives 2 spaces, not 4).
       if (stack.length > 1 && cur.pre === 0 && cur.pos < cur.s.length && cur.s.charCodeAt(cur.pos) === 9) {
-        const w = 4 - (cur.col % 4);
+        let effCol = cur.col;
+        for (let d = stack.length - 1; d >= 1; d--) {
+          if (stack[d].t === 'quote') { effCol = 2; break; }
+          if (stack[d].t === 'item') break;
+        }
+        const w = 4 - (effCol % 4);
         cur.pre = w; cur.pos++; cur.col += w;
       }
       leaf.lines.push(curText(cur));
