@@ -1979,6 +1979,15 @@ function parseBlocks(lines, endsNl) {
           // line IS code content (doc-02).
           curRestore(cur, sv);
           closeTo(depth - 1);
+        } else if (startsBlock(cur) || listMarker(cur)) {
+          // A line that starts a block (new list item, heading, quote,
+          // thematic break, fence, HTML block) ends the fence: only
+          // plain text lines are lazy fence content. Close the fence
+          // (and the item) and fall through so this line starts its
+          // own block (doc-36: `* next` after a fence in a quote).
+          if (leaf.lines.length && leaf.lines[leaf.lines.length - 1] === '') leaf.lines.pop();
+          curRestore(cur, sv);
+          closeTo(depth - 1);
         } else {
           curRestore(cur, sv);
           stripFenceIndent(cur, leaf.fenceIndent);
