@@ -1730,7 +1730,11 @@ function parseBlocks(lines, endsNl) {
       }
     }
     // --- HTML block ---
-    {
+    // `first` is curPeek, which reports a pending space when the <=3-space
+    // skip partially consumed a tab: `\t<div>` then has first === ' ',
+    // not '<', so it falls through to indented code instead of starting
+    // an HTML block (a tab-indented tag is code, not HTML).
+    if (first === '<') {
       const hb = htmlBlockStart(cur);
       if (hb) {
         // type 7 cannot interrupt a paragraph
