@@ -1543,6 +1543,8 @@ function parseBlocks(lines, endsNl) {
   const stack = [root];
   let leaf = null, leafParent = null;
   let pendingLoose = null;
+  let pendingLooseCount = 0; // blank lines in the current pending run
+  let lineBlankRun = 0; // blank lines immediately before the current line
   let pendingLooseRaw = false;
   let pendingLooseInItem = false; // the blank line's leaf sat directly in
   // a list item (not nested in a blockquote inside it): a new item after
@@ -1560,8 +1562,18 @@ function parseBlocks(lines, endsNl) {
   // separator at the item's level makes the run one). `lists` is
   // collected only on the first blank of the run -- the stack does not
   // grow across blank lines.
+  // A blank line sits directly in a list item when its leaf did, or when
+  // the deepest open container is the item itself: an HTML block that
+  // already closed leaves leafParent null, so the leaf test alone misses
+  // it (a `> ` blank after `<!-- -->`). A quote on top means the blank
+  // dives into a quote inside the item instead (cm-320), so the stack
+  // test stays false there.
+  function blankInItem() {
+    return !!(leafParent && leafParent.t === 'item') || stack[stack.length - 1].t === 'item';
+  }
   function markBlank(inItem, isRaw, quoteIdx) {
     if (pendingLoose) {
+      pendingLooseCount++;
       pendingLooseRaw = pendingLooseRaw || isRaw;
       pendingLooseInItem = pendingLooseInItem || inItem;
       if (quoteIdx < pendingLooseQuote) pendingLooseQuote = quoteIdx;
@@ -1569,6 +1581,7 @@ function parseBlocks(lines, endsNl) {
       pendingLooseRaw = isRaw;
       pendingLooseInItem = inItem;
       pendingLooseQuote = quoteIdx;
+      pendingLooseCount = 1;
       pendingLoose = [];
       for (let d = 1; d < stack.length; d++) if (stack[d].t === 'list') pendingLoose.push(stack[d]);
     }
@@ -1823,9 +1836,19 @@ function parseBlocks(lines, endsNl) {
             if (last && last.t === 'list' && last.ordered === li.ordered &&
                 (li.ordered ? last.delim === li.delim : last.marker === li.marker)) list = last;
           }
+          const listExisted = !!list;
           if (!list) {
             list = { t: 'list', ordered: li.ordered, start: li.start, delim: li.delim, marker: li.marker, tight: true, children: [] };
             parent.children.push(list);
+          }
+          if (listExisted) {
+            // An HTML block ending the previous item keeps its trailing
+            // newline only when exactly one blank line separates the
+            // items (marked's item text then ends with a single \n):
+            // no blank line (V1) and two or more (U6) both drop it.
+            const prevItem = list.children[list.children.length - 1];
+            const prevLast = prevItem && prevItem.children[prevItem.children.length - 1];
+            if (prevLast && prevLast.t === 'html') prevLast.trailNl = lineBlankRun === 1;
           }
           // the item's content indent is relative to the line's content
           // start (after the container prefixes), so a later line with a
@@ -2083,12 +2106,17 @@ function parseBlocks(lines, endsNl) {
         if (curIndent(cur) >= 4) { curStrip(cur, 4); leaf.lines.push(curText(cur)); }
         else {
           leaf.lines.push('');
-          markBlank(!!(leafParent && leafParent.t === 'item'), /^[ \t]*$/.test(raw), blankQuote);
+          markBlank(blankInItem(), /^[ \t]*$/.test(raw), blankQuote);
         }
       }
       else if (leaf && leaf.t === 'html' && leaf.end !== 'blank') leaf.lines.push(curText(cur));
       else {
-        const inItem = !!(leafParent && leafParent.t === 'item');
+        // A blank line sits directly in a list item when its leaf did,
+        // or when the deepest open container is the item itself (see
+        // blankInItem): an HTML block that already closed leaves
+        // leafParent null, so the leaf test alone misses it. Read it
+        // before finalizeLeaf clears leafParent.
+        const inItem = blankInItem();
         finalizeLeaf();
         markBlank(inItem, /^[ \t]*$/.test(raw), blankQuote);
       }
@@ -2142,6 +2170,7 @@ function parseBlocks(lines, endsNl) {
         // A blank line the code just swallowed was code content, not a
         // separator between blocks: it loosens nothing.
         pendingLoose = null;
+        pendingLooseCount = 0;
         continue;
       }
       finalizeLeaf();
@@ -2162,7 +2191,11 @@ function parseBlocks(lines, endsNl) {
     // blocks of that item). A block that lands outside the list -- a
     // sibling list, or a block in another container -- leaves it tight
     // (doc-06/29/37: a blank `>` line before a sibling ordered list).
+    // lineBlankRun records this run's length for the new-item HTML rule
+    // below (startBlock): 0 when no blank run preceded this line.
+    lineBlankRun = 0;
     if (pendingLoose) {
+      lineBlankRun = pendingLooseCount;
       const top = stack[stack.length - 1];
       let lm = null;
       {
@@ -2203,6 +2236,7 @@ function parseBlocks(lines, endsNl) {
         }
       }
       pendingLoose = null;
+      pendingLooseCount = 0;
     }
     // start (or continue) a block from this line
     let extra = 0;
@@ -2307,6 +2341,23 @@ function renderBlock(node, refs, tightList) {
       return out + '</blockquote>\n';
     }
     case 'list': {
+      // marked trims trailing whitespace from the LAST item's text: a
+      // trailing space/tab/newline at the end of its last paragraph (or
+      // the trailing newline of its last HTML block) is dropped, while
+      // non-last items keep it (Q4/R1/R9/R10/doc-30). Other last-child
+      // types keep their structural trailing newline (fenced code, R4).
+      const lastItem = node.children[node.children.length - 1];
+      if (lastItem) {
+        const lc = lastItem.children[lastItem.children.length - 1];
+        if (lc && lc.t === 'p' && lc.text) lc.text = lc.text.replace(/[ \t\r\n]+$/, '');
+        else if (lc && lc.t === 'html') {
+          lc.trailNl = false;
+          // The item-text trim also strips trailing spaces from the
+          // block's last line (P15: `<!-- note --> foo - `).
+          const hl = lc.lines;
+          if (hl.length) hl[hl.length - 1] = hl[hl.length - 1].replace(/[ \t\r]+$/, '');
+        }
+      }
       let out = node.ordered ? '<ol' + (node.start !== 1 ? ' start="' + node.start + '"' : '') + '>\n' : '<ul>\n';
       for (const item of node.children) out += renderItem(item, refs, node.tight);
       return out + (node.ordered ? '</ol>\n' : '</ul>\n');
