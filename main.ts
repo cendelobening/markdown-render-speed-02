@@ -1,24 +1,39 @@
-// Driver for the markdown renderer: reads every case, renders each one
-// alone with parse(), and writes the HTML array for the scorer.
+// Entry point for the markdown-render-speed-02 kit driver.
+//
+// The kit drops a JSON array of { id, markdown } cases into the input
+// directory and expects a JSON array of rendered HTML strings in the
+// output directory. Each case is rendered in isolation, so state from
+// one document can never leak into the next.
+
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse } from './parse.js';
 
-interface InputCase {
-  id: string;
-  markdown: string;
+type Case = { id: string; markdown: string };
+
+function dirOf(name: string, fallback: string): string {
+  const seen = process.env[name];
+  return seen !== undefined && seen !== '' ? seen : fallback;
 }
 
-const inputDir: string = process.env.MAKEFUN_INPUT_DIR ?? '/input';
-const outputDir: string = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
-
-const payload: string = readFileSync(join(inputDir, 'cases.json'), 'utf8');
-const cases: InputCase[] = JSON.parse(payload) as InputCase[];
-
-const rendered: string[] = [];
-for (const item of cases) {
-  rendered.push(parse(item.markdown));
+function loadCases(dir: string): Case[] {
+  const raw = readFileSync(join(dir, 'cases.json'), 'utf8');
+  const parsed: unknown = JSON.parse(raw);
+  if (!Array.isArray(parsed)) throw new Error('cases.json is not an array');
+  return parsed as Case[];
 }
 
-mkdirSync(outputDir, { recursive: true });
-writeFileSync(join(outputDir, 'html.json'), JSON.stringify(rendered));
+function renderAll(cases: Case[]): string[] {
+  const out: string[] = new Array(cases.length);
+  for (let i = 0; i < cases.length; i++) out[i] = parse(cases[i].markdown);
+  return out;
+}
+
+function store(dir: string, html: string[]): void {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'html.json'), JSON.stringify(html));
+}
+
+const inDir = dirOf('MAKEFUN_INPUT_DIR', '/input');
+const outDir = dirOf('MAKEFUN_OUTPUT_DIR', '/output');
+store(outDir, renderAll(loadCases(inDir)));
