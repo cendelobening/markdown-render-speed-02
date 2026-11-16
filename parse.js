@@ -716,9 +716,42 @@ function labelConsumable(s, start, end) {
 // ---------------------------------------------------------------------------
 // Main inline scanner: builds a node list, then emphasis + rendering.
 // ---------------------------------------------------------------------------
+// Replicate marked's emStrongMask (#n): the masked source it uses to bound
+// the emphasis/del closer search. Step 2 masks escaped punctuation to '+'
+// and backticks inside code spans to '+'; step 3 (blockSkip) masks inline
+// links, code spans and HTML tags to 'a's, all at equal length. A backtick
+// run that opens no code span can then pair with a later backtick and mask
+// the text between them -- a FALSE code span -- so emphasis delimiters
+// inside it cannot close (doc-09/16/28/35: a link label holding `` ``x` ``
+// pairs its lone backtick with a later one). Delimiters inside a masked
+// span may still OPEN (marked's opener search runs on the real source);
+// only the closer role is masked. Positions map 1:1 onto the original.
+const MASK_ANY_PUNCT = /(`+)(?:[^`]|[^`][\s\S]*?[^`])\1(?!`)|`+|\\([\p{P}\p{S}])/gu;
+const MASK_BLOCK_SKIP = /\[(?:[^\[\]`]|(?<a>`+)[^`]+\k<a>(?!`))*?\]\((?:\\[\s\S]|[^\\\(\)]|\((?:\\[\s\S]|[^\\\(\)])*\))*\)|(?<!`)()(?<b>`+)[^`]+\k<b>(?!`)|<(?! )[^<>]*?>/g;
+// Masked [start, end) spans of a paragraph source, in source coordinates.
+function maskedIntervals(src) {
+  if (!src.includes('`')) return null;
+  const t2 = src.replace(MASK_ANY_PUNCT, (m, s, r) => r ? '+'.repeat(m.length) : s ? s + m.slice(s.length, -s.length).replace(/`/g, '+') + s : m);
+  const spans = [];
+  MASK_BLOCK_SKIP.lastIndex = 0;
+  let m;
+  while ((m = MASK_BLOCK_SKIP.exec(t2)) !== null) {
+    if (m[0].length === 0) { MASK_BLOCK_SKIP.lastIndex++; continue; }
+    spans.push([m.index, m.index + m[0].length]);
+  }
+  return spans.length ? spans : null;
+}
+
 function parseInline(src, refs) {
   const s = src;
   const n = s.length;
+  // Masked spans (false code spans etc.) for the emphasis closer rule.
+  const mSpans = maskedIntervals(s);
+  let mArr = null;
+  if (mSpans) {
+    mArr = new Uint8Array(n);
+    for (const [a, b] of mSpans) mArr.fill(1, a, b);
+  }
   const nodes = [];      // inline nodes
   const delims = [];     // indices into nodes of delimiter nodes
   const brackets = [];   // indices into nodes of '[' opener nodes
@@ -796,7 +829,7 @@ function parseInline(src, refs) {
       if (ch === '*') { canOpen = left; canClose = right; }
       else { canOpen = left && (!right || (i > 0 && isUniPunct(s[i - 1]))); canClose = right && (!left || (j < n && isUniPunct(s[j]))); }
       if (canOpen || canClose) {
-        const idx = pushNode({ k: 4, ch, n: run, origN: run, open: canOpen, close: canClose });
+        const idx = pushNode({ k: 4, ch, n: run, origN: run, open: canOpen, close: canClose, pos: i, masked: !!mArr && !!mArr[i] });
         delims.push(idx);
       } else {
         text += s.slice(i, j);
@@ -812,7 +845,7 @@ function parseInline(src, refs) {
       if (run >= 1 && run <= 2) {
         const [left, right] = flankInfo(s, i, j);
         if (left || right) {
-          const idx = pushNode({ k: 4, ch: '~', n: run, origN: run, open: left, close: right });
+          const idx = pushNode({ k: 4, ch: '~', n: run, origN: run, open: left, close: right, pos: i, masked: !!mArr && !!mArr[i] });
           delims.push(idx);
           i = j; continue;
         }
@@ -1116,7 +1149,12 @@ function processEmphasis(nodes, delims) {
   while (di < delims.length) {
     const closerIdx = delims[di];
     const closer = nodes[closerIdx];
-    if (!closer.close) { di++; continue; }
+    // A delimiter inside a masked span (false code span, doc-09/16/28/35)
+    // cannot CLOSE -- marked's closer search runs on the masked source,
+    // where it is an 'a'. It may still OPEN, so it stays in delims.
+    // The mask is the paragraph's: delimiters inside a link label are
+    // governed by the label's own masking, so they are exempt here.
+    if (!closer.close || (closer.masked && groupOf[closerIdx] === 0)) { di++; continue; }
     const g = groupOf[closerIdx];
     const bottom = openersBottom.get(g + ':' + closer.ch);
     let oj = di - 1, openerPos = -1;
