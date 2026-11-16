@@ -860,12 +860,15 @@ function parseBlocks(src) {
       }
       if (node.t === 'item') {
         // A blank line still belongs to the item: it makes the list loose,
-        // it does not end the item.
+        // it does not end the item. The item's content indent is stored
+        // relative to the column after its parent containers, so the
+        // continuation test compares the line's own indent against it
+        // (a quote marker may swallow a space, shifting absolute columns).
         if (lineIsBlank(rem)) { d++; continue; }
         const ind = lineIndent(rem);
-        if (col + ind >= node.contentIndent) {
-          rem = consumeCols(rem, node.contentIndent - col, col);
-          col = node.contentIndent;
+        if (ind >= node.contentIndent) {
+          rem = consumeCols(rem, node.contentIndent, col);
+          col += node.contentIndent;
           d++;
           continue;
         }
@@ -924,11 +927,15 @@ function parseBlocks(src) {
   // that did not match the paragraph's containers.
   function addParaLine(para, rem, lazy) {
     if (lazy) {
-      // A lazy continuation line loses its leading indent (up to the
-      // indented-code threshold). A setext underline cannot be a lazy
-      // continuation: it stays literal text, indented so it reads as text.
-      const stripped = stripCols(rem, Math.min(4, lineIndent(rem)));
-      if (setextLevel(rem)) { para.lines.push('    ' + stripped); return true; }
+      // A lazy continuation line keeps a short leading indent (a paragraph
+      // continuation preserves its spaces), but an indent of four or more
+      // is dropped, as in cm-238/291/312, where the lazy line would
+      // otherwise read as indented code. A setext underline cannot be a
+      // lazy continuation: it stays literal text, indented so it reads
+      // as text.
+      const ind = lineIndent(rem);
+      const stripped = ind >= 4 ? stripCols(rem, 4) : rem;
+      if (setextLevel(rem)) { para.lines.push('    ' + stripCols(rem, Math.min(4, ind))); return true; }
       para.lines.push(stripped);
       return true;
     }
@@ -1029,7 +1036,7 @@ function parseBlocks(src) {
             const prev = list.children[list.children.length - 1];
             prev.blankBeforeNext = pendingBlank;
           }
-          const item = mkItem(marker.contentIndent);
+          const item = mkItem(marker.contentIndent - col);
           addChild(list, item);
           stack.push(item);
           rem = consumeCols(rem, marker.contentIndent - col, col);
