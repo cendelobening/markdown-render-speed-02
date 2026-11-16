@@ -1511,8 +1511,18 @@ function matchWww(text, i, inBracket) {
   }
   if (text[k] === '/') {
     let p = k;
-    // Inside link text the path stops at ']' so the outer bracket can close.
-    while (p < n && text[p] !== ' ' && text[p] !== '\t' && text[p] !== '\n' && text[p] !== '<' && text[p] !== '>' && !(inBracket && text[p] === ']')) p++;
+    // Inside link text the path stops at ']' so the outer bracket can close,
+    // unless that ']' sits right before a '(' opening a fresh scheme URL.
+    while (p < n) {
+      const c = text[p];
+      if (c === ' ' || c === '\t' || c === '\n' || c === '<' || c === '>') break;
+      if (inBracket && c === ']') {
+        if (text[p + 1] === '(' && startsSchemeUrl(text, p + 2)) { p++; continue; }
+        break;
+      }
+      if (c === '(' && startsSchemeUrl(text, p + 1)) break;
+      p++;
+    }
     k = p;
   }
   const trimmed = trimAutolink(text.slice(i, k));
@@ -1522,12 +1532,34 @@ function matchWww(text, i, inBracket) {
 
 // Match a scheme autolink whose colon is at text[colon]. Returns the end
 // index, or -1.
+// True when text[p] starts a fresh "scheme://..." URL: a '(' that opens
+// a new autolink ends the current one before it (doc-08).
+function startsSchemeUrl(text, p) {
+  const n = text.length;
+  let q = p;
+  if (q >= n || !isAlphaCh(text[q])) return false;
+  q++;
+  while (q < n && (isAlnumCh(text[q]) || text[q] === '+' || text[q] === '-' || text[q] === '.')) q++;
+  return q + 2 < n && text[q] === ':' && text[q + 1] === '/' && text[q + 2] === '/';
+}
+
 function matchSchemeAutolink(text, i, colon, inBracket) {
   const n = text.length;
   const contentStart = colon + 1;
   let p = contentStart;
   // Inside link text the run stops at ']' so the outer bracket can close.
-  while (p < n && text[p] !== ' ' && text[p] !== '\t' && text[p] !== '\n' && text[p] !== '<' && text[p] !== '>' && !(inBracket && text[p] === ']')) p++;
+  // A '(' that opens a fresh scheme:// URL ends the run before it, and a
+  // ']' right before such a '(' belongs to this autolink (doc-08).
+  while (p < n) {
+    const c = text[p];
+    if (c === ' ' || c === '\t' || c === '\n' || c === '<' || c === '>') break;
+    if (inBracket && c === ']') {
+      if (text[p + 1] === '(' && startsSchemeUrl(text, p + 2)) { p++; continue; }
+      break;
+    }
+    if (c === '(' && startsSchemeUrl(text, p + 1)) break;
+    p++;
+  }
   const runEnd = p;
   let at = -1;
   let slash = -1;
