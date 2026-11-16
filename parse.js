@@ -1556,7 +1556,7 @@ function matchWww(text, i, inBracket) {
     k++;
     while (k < n && isDigitCh(text[k])) k++;
   }
-  if (text[k] === '/') {
+  if (text[k] === '/' || text[k] === '\\') {
     let p = k;
     // Inside link text the path stops at ']' so the outer bracket can close.
     while (p < n && text[p] !== ' ' && text[p] !== '\t' && text[p] !== '\n' && text[p] !== '<' && text[p] !== '>' && !(inBracket && text[p] === ']')) {
