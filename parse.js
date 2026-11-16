@@ -2353,8 +2353,14 @@ function htmlBlockStart(cur) {
 
 // Detect a list marker at the cursor (indent already skipped, ≤3).
 // Returns {ordered, bullet, marker, delim, start, empty, contentIndent,
-// markerIndent} or null.
+// markerIndent} or null. A pending space (pre > 0) means the ≤3-space
+// skip left indent behind -- the marker sits at indent 4+ in the current
+// content, so it is indented code, not a list item (doc-22: `>     1.`
+// after a `19. ` item is code; a bare `\t1.` is code too). Plain spaces
+// leave the extra space at pos and already fail; only a quote/tab hides
+// the indent in pre, which is why this check is needed here.
 function listMarker(cur) {
+  if (cur.pre > 0) return null;
   const s = cur.s, pos = cur.pos, col = cur.col - cur.pre;
   const c = s.charCodeAt(pos);
   let ordered = false, marker = '', delim = '', start = 1, width = 0;
