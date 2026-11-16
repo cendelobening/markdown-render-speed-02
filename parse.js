@@ -762,16 +762,14 @@ function parseBlocks(src) {
   let curLi = 0;
   pendingBlank = false;
 
-  // True when the source line after index li is blank (whitespace only).
-  // A following blank line is what strips an html block's trailing newline.
+  // True when the source line after index li is empty (zero characters).
+  // A following empty line is what strips an html block's trailing
+  // newline; a whitespace-only line (spaces or a tab) does not strip it
+  // (doc-22: a tab line after </pre> keeps the newline, while cm-183's
+  // truly empty line drops it).
   function nextSrcBlank(li) {
     if (li + 1 >= lines.length) return false;
-    const s = lines[li + 1];
-    for (let k = 0; k < s.length; k++) {
-      const c = s[k];
-      if (c !== ' ' && c !== '\t') return false;
-    }
-    return true;
+    return lines[li + 1] === '';
   }
 
   function top() { return stack[stack.length - 1]; }
@@ -999,7 +997,7 @@ function parseBlocks(src) {
           code.fenced = true;
           code.fenceCh = fence.ch;
           code.fenceLen = fence.len;
-          code.fenceInd = ind;
+          code.fenceInd = stack.some(n => n.t === 'quote') ? 0 : ind;
           const info = fence.info.replace(/\\([!-/:-@\[-`{-~])/g, '$1');
           code.lang = info === '' ? null : info.split(/[ \t]+/)[0];
           addChild(top(), code);
@@ -1218,6 +1216,22 @@ function parseInline(text, refs) {
   }
   function pushNode(node) { flushText(); nodes.push(node); }
 
+  // True when an open bracket could still form a link: it is active and
+  // its content so far holds no non-autolink link (a link inside a
+  // bracket kills the bracket, so an autolink run must not stop at the
+  // bracket's ']' — doc-22/doc-12 nested brackets).
+  function liveBracket() {
+    for (const b of brackets) {
+      if (!b.active) continue;
+      let dead = false;
+      for (let k = b.idx + 1; k < nodes.length; k++) {
+        if (nodes[k].t === 'link' && !nodes[k].auto) { dead = true; break; }
+      }
+      if (!dead) return true;
+    }
+    return false;
+  }
+
   // Try a bracket autolink <scheme:...> or <email> at position i.
   // Returns {node, end} or null.
   function bracketAutolink(i) {
@@ -1391,7 +1405,7 @@ function parseInline(text, refs) {
     if (c === ']') {
       flushText();
       const res = tryCloseBracket(text, i, nodes, brackets, refs);
-      inBracket = brackets.length > 0 && brackets.some((b) => b.active);
+      inBracket = liveBracket();
       if (res) { i = res.end; continue; }
       addText(']', ']');
       i++;
