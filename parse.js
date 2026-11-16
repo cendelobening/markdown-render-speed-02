@@ -455,16 +455,19 @@ function extractRefDefs(para, refs) {
 // ---- table helpers ----
 
 // Split a table row line into cells. Pipes escaped with a backslash and
-// pipes inside code spans do not split.
+// pipes inside code spans do not split. A backtick run with no closer
+// is literal text and poisons the rest of its cell: no later backtick in
+// that cell may open a span, so a pipe after it still splits.
 function splitTableCells(line) {
   const cells = [];
   let cur = '';
   let i = 0;
   const n = line.length;
+  let poisoned = false;
   while (i < n) {
     const c = line[i];
     if (c === '\\' && i + 1 < n) { cur += line.slice(i, i + 2); i += 2; continue; }
-    if (c === '`') {
+    if (c === '`' && !poisoned) {
       let run = 0;
       while (i + run < n && line[i + run] === '`') run++;
       // Find a closing run of exactly this length.
@@ -479,10 +482,11 @@ function splitTableCells(line) {
         } else k++;
       }
       if (found !== -1) { cur += line.slice(i, found + run); i = found + run; }
-      else { cur += line.slice(i, i + run); i += run; }
+      else { cur += line.slice(i, i + run); i += run; poisoned = true; }
       continue;
     }
-    if (c === '|') { cells.push(cur); cur = ''; i++; continue; }
+    if (c === '`') { cur += c; i++; continue; }
+    if (c === '|') { cells.push(cur); cur = ''; i++; poisoned = false; continue; }
     cur += c;
     i++;
   }
@@ -1297,7 +1301,13 @@ function codeCloseAt(text, from, run, openAt, brackets, nodes, refs) {
       k += r;
     } else if (c === ']' && anyLiveBracket(brackets)) {
       const bi = topBracket(brackets);
-      if (bi !== -1 && labelHasBacktick(nodes, brackets[bi].idx) && bracketHasLinkTail(text, k, openAt, brackets, nodes, refs)) return -1;
+      // The label holds a backtick if one is already in the gathered
+      // nodes, or if one sits between this opener and the bracket.
+      let hasTick = bi !== -1 && labelHasBacktick(nodes, brackets[bi].idx);
+      if (!hasTick) {
+        for (let q = openAt + run; q < k; q++) if (text[q] === '`') { hasTick = true; break; }
+      }
+      if (bi !== -1 && hasTick && bracketHasLinkTail(text, k, openAt, brackets, nodes, refs)) return -1;
       k++;
     } else {
       k++;
