@@ -772,7 +772,14 @@ function parseInline(src, refs) {
         i = al[1]; continue;
       }
       const ht = scanHtmlTag(s, i);
-      if (ht) { pushNode({ k: 3, s: ht[0] }); i = ht[1]; continue; }
+      if (ht) {
+        // marked's tag tokenizer flips its persistent inLink flag here:
+        // `<a ` (a literal space) opens it, a literal `</a>` closes it.
+        // A self-closing `<a />` still opens it; `</a >` does not close.
+        if (!inLinkLeak && /^<a /i.test(ht[0])) inLinkLeak = true;
+        else if (inLinkLeak && /^<\/a>/i.test(ht[0])) inLinkLeak = false;
+        pushNode({ k: 3, s: ht[0] }); i = ht[1]; continue;
+      }
       text += '<'; i++; continue;
     }
     // --- entities ---
@@ -808,7 +815,10 @@ function parseInline(src, refs) {
       i++; continue;
     }
     // --- extended autolinks: www. / scheme / email ---
-    if (c === 119 || c === 104 || c === 102 || isAsciiAlnum(c)) {
+    // Suppressed while the persistent inLink flag is set (an unclosed
+    // `<a ` tag earlier in the document): marked tries its url tokenizer
+    // only when !state.inLink.
+    if (!inLinkLeak && (c === 119 || c === 104 || c === 102 || isAsciiAlnum(c))) {
       // www. or scheme:// or scheme:email -- only at a word start-ish position.
       // Fast pre-check: scanExtendedAutolink returns null when prev is
       // alphanumeric (mid-word), so skip the flag scans and the call there.
@@ -832,7 +842,7 @@ function parseInline(src, refs) {
       }
       // fall through to plain text
     }
-    if (c === 64) { // @ -- email autolink: look back for local part in pending text
+    if (c === 64 && !inLinkLeak) { // @ -- email autolink: look back for local part in pending text
       // find start of local part within current text chunk
       let start = text.length;
       while (start > 0) {
@@ -2217,7 +2227,18 @@ function renderItem(item, refs, tight) {
   return out + '</li>\n';
 }
 
+// Persistent "inside an <a>" flag, mirroring marked's lexer state. marked
+// sets state.inLink when its inline tag tokenizer meets `<a ` (startATag
+// /^<a /i) and clears it only on a literal `</a>` (endATag /^<\/a>/i).
+// The flag is NOT reset between paragraphs: marked lexes all inline
+// content through one queue after block lexing, so an unclosed <a> in one
+// paragraph suppresses bare-URL/email autolinks in every later paragraph
+// of the document (the url tokenizer is tried only when !inLink). Bracket
+// links and <...> autolinks are unaffected. Reset once per parse().
+let inLinkLeak = false;
+
 export function parse(markdown) {
+  inLinkLeak = false;
   const text = markdown.replace(/\r\n?/g, '\n');
   const endsNl = text.length > 0 && text.charCodeAt(text.length - 1) === 10;
   const lines = text.split('\n');
