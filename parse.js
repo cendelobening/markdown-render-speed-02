@@ -1637,7 +1637,24 @@ function parseBlocks(lines, endsNl) {
               (li.ordered ? parent.delim === li.delim : parent.marker === li.marker)) {
             list = parent; // the descent stopped at this list: add the item to it
           } else {
-            if (parent.t === 'list') parent = stack[stack.length - 2]; // a different list is a sibling
+            if (parent.t === 'list') {
+              // A different list next to the open one is its sibling, so
+              // it belongs to the open list's own parent in the tree. The
+              // stack element directly below the open list is not always
+              // that parent: an older list still sits open below it (its
+              // items are done, but it was never popped) even though it
+              // is a sibling of the open list, not an ancestor. Taking
+              // the stack element below blindly nests the new list inside
+              // the old one, where it renders as one empty <li> and its
+              // whole content vanishes (doc-02). Find the parent by the
+              // tree instead: the deepest stack element that holds the
+              // open list among its children.
+              const openList = parent;
+              parent = stack[0];
+              for (let d = stack.length - 2; d >= 0; d--) {
+                if (stack[d].children.indexOf(openList) >= 0) { parent = stack[d]; break; }
+              }
+            }
             const last = parent.children[parent.children.length - 1];
             if (last && last.t === 'list' && last.ordered === li.ordered &&
                 (li.ordered ? last.delim === li.delim : last.marker === li.marker)) list = last;
