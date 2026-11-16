@@ -506,12 +506,18 @@ function trimAutolinkEnd(s, start, end) {
   }
   return e;
 }
-// Scan a path after a domain/email: /... up to whitespace or '<', with
-// balanced-paren awareness handled by trimAutolinkEnd. Returns end index.
+// Scan a path after a domain/email: /... up to whitespace or '<', mirroring
+// marked's url regex ([^\s<]*) plus its _backpedal. Returns end index.
 // When stopAtBracket, a ']' that closes a bracket (followed by '(' or
 // '[') ends the path before the ']' (the URL is link text, not an
-// autolink); otherwise the ']' is part of the URL and the path ends just
-// after it (doc-08: a failed `](...)` leaves `)]` in the bare URL).
+// autolink); otherwise the ']' is part of the URL. A '(' opens a group
+// that is kept only when it closes with a ')' before the path ends
+// (the backpedal's \([^)]*\) alternative): an unclosed '(' ends the URL
+// there -- doc-08: https://a.com/b)](https://c.com/d e) splits into two
+// autolinks (the '(' group has no ')' before the space), while doc-37's
+// https://www.example.com)](http://img.shields.io/examples/jolt) is one
+// autolink (its '(' group closes). Trailing punctuation is left to
+// trimAutolinkEnd.
 function scanAutolinkPath(s, i, stopAtBracket) {
   const n = s.length;
   let j = i;
@@ -520,20 +526,19 @@ function scanAutolinkPath(s, i, stopAtBracket) {
     if (c <= 32 || c === 60) break;
     if (c === 93 && j + 1 < n && (s.charCodeAt(j + 1) === 40 || s.charCodeAt(j + 1) === 91)) {
       if (stopAtBracket) break;
-      // The ']' is part of the URL; the path ends after it -- unless the
-      // '(' that follows starts another URL (doc-08), in which case the
-      // path ends here; a '(' opening a non-URL (doc-12) stays in the path.
       j++;
-      if (s.charCodeAt(j) === 40) {
-        let q = j + 1, isUrl = false;
-        if (s.startsWith('www.', q)) isUrl = true;
-        else {
-          let r = q;
-          while (r < n && /[A-Za-z0-9+.-]/.test(s[r])) r++;
-          if (r - q >= 2 && s.startsWith('://', r)) isUrl = true;
-        }
-        if (isUrl) break;
+      continue;
+    }
+    if (c === 40) { // '(' -- keep the group only if it closes before the path ends
+      let k = j + 1;
+      while (k < n) {
+        const cc = s.charCodeAt(k);
+        if (cc <= 32 || cc === 60) break;
+        if (cc === 41) break;
+        k++;
       }
+      if (k >= n || s.charCodeAt(k) !== 41) break; // unclosed '(' ends the URL
+      j = k + 1;
       continue;
     }
     j++;
