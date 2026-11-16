@@ -1420,6 +1420,21 @@ function curAdvance(c, k) {
   }
 }
 function curText(c) { return (c.pre > 0 ? ' '.repeat(c.pre) : '') + c.s.slice(c.pos); }
+// Expand the cursor's remaining whitespace-only text to spaces, tabs
+// going to the next multiple of 4 from the current column (doc-13).
+// Used for fenced-code content lines that are blank: inside a container
+// a tab in the leftover whitespace is real content, not a raw tab.
+function expandBlank(c) {
+  let s = c.pre > 0 ? ' '.repeat(c.pre) : '';
+  let col = c.col;
+  for (let p = c.pos; p < c.s.length; p++) {
+    const ch = c.s.charCodeAt(p);
+    if (ch === 32) { s += ' '; col++; }
+    else if (ch === 9) { const w = 4 - (col % 4); s += ' '.repeat(w); col += w; }
+    else break;
+  }
+  return s;
+}
 function curIsBlank(c) {
   // Pending spaces (pre) are still whitespace: a line holding only spaces
   // (whether from the line itself or from a partially consumed tab) is blank.
@@ -1667,7 +1682,15 @@ function parseBlocks(lines, endsNl) {
         curRestore(cur, sv); break;
       }
       if (cont.t === 'item') {
-        if (curIsBlank(cur)) { depth++; continue; }
+        if (curIsBlank(cur)) {
+          // A blank line inside a fenced code block is content, not a
+          // separator: strip the item's indent (columns, tab-expanding)
+          // exactly as for a content line, so a tab-only line becomes
+          // the right number of spaces (doc-13: `\t` -> 2 spaces in a
+          // 2-indent item, 1 space in a `1. ` item, empty after a `>`).
+          if (leaf && leaf.t === 'code' && leaf.fenced) curAdvance(cur, cont.indent);
+          depth++; continue;
+        }
         // An empty item followed by a blank line is closed: a later
         // indented line is a new top-level block, not item content.
         if (cont.blankAfterEmpty) break;
@@ -2139,7 +2162,16 @@ function parseBlocks(lines, endsNl) {
       for (let d = stack.length - 1; d >= 1; d--) {
         if (stack[d].t === 'item' && stack[d].children.length === 0) stack[d].blankAfterEmpty = true;
       }
-      if (leaf && leaf.t === 'code' && leaf.fenced) { curStrip(cur, leaf.fenceIndent); leaf.lines.push(curText(cur)); }
+      if (leaf && leaf.t === 'code' && leaf.fenced) {
+        // The fence-indent strip counts characters, not columns (marked's
+        // Dt): a tab is one character and is consumed wholly, so a
+        // tab-only line in an indented fence is empty (doc-13), not the
+        // 2 spaces a column strip leaves. Inside a container the leftover
+        // whitespace is tab-expanded like a content line; at top level
+        // the tab stays verbatim (cm: a bare `\t` line is kept).
+        stripFenceIndent(cur, leaf.fenceIndent);
+        leaf.lines.push(stack.length > 1 ? expandBlank(cur) : curText(cur));
+      }
       else if (leaf && leaf.t === 'code' && !leaf.fenced) {
         if (curIndent(cur) >= 4) { curStrip(cur, 4); leaf.lines.push(curText(cur)); }
         else {
