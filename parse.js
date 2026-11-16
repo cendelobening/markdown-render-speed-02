@@ -1108,8 +1108,12 @@ function parseBlocks(src) {
       // indent means the fence never took hold and closes empty
       // (doc-17: the ```toml fence's first line is at column 0, while
       // doc-02's first lines match the item and only a later line is
-      // lazy).
-      if (w.matched < w.cdepth && (stack[w.matched].t === 'quote' || (stack[w.matched].t === 'item' && leaf.lines.length === 0))) {
+      // lazy). A line that misses the item's indent but starts a list
+      // item of its own is not lazy content: the fence ends so the new
+      // item can start.
+      const missedItem = w.matched < w.cdepth && stack[w.matched].t === 'item';
+      const startsItem = missedItem && parseListMarker(rem, col) !== null;
+      if (w.matched < w.cdepth && (stack[w.matched].t === 'quote' || startsItem || (stack[w.matched].t === 'item' && leaf.lines.length === 0))) {
         closeFrom(w.matched, true);
         openNewBlocks(rem, col);
         continue;
