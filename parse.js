@@ -560,10 +560,15 @@ function scanExtendedAutolink(s, i, prev, allowTrailingUnderscore, hasActiveBrac
     const text = s.slice(i, end);
     return ['http://' + text, text, end];
   }
-  // scheme form: letters/digits/+/-/. 2-32 chars, then ':' 
-  if (/[A-Za-z]/.test(s[i])) {
+  // scheme form: letters/digits/+/-/. 2-32 chars, then ':'
+  const c0 = s.charCodeAt(i);
+  if ((c0 >= 65 && c0 <= 90) || (c0 >= 97 && c0 <= 122)) {
     let j = i;
-    while (j < n && /[A-Za-z0-9+.-]/.test(s[j])) j++;
+    while (j < n) {
+      const cj = s.charCodeAt(j);
+      if ((cj >= 48 && cj <= 57) || (cj >= 65 && cj <= 90) || (cj >= 97 && cj <= 122) || cj === 43 || cj === 45 || cj === 46) { j++; continue; }
+      break;
+    }
     if (j - i >= 2 && j - i <= 32 && j < n && s.charCodeAt(j) === 58) {
       const scheme = s.slice(i, j);
       if (s.startsWith('://', j)) {
