@@ -1175,12 +1175,12 @@ function processEmphasis(nodes, delims) {
       const nextSeq = openerPos + 1 < delims.length ? nodes[delims[openerPos + 1]].seq : -1;
       const nextOpen = openerPos + 1 < delims.length ? nodes[delims[openerPos + 1]].open : false;
       openersBottom.set(g + ':' + closer.ch, { seq: nextSeq, use: use, openerClose: opener.close, bottomOpen: nextOpen });
-      nodes[openerIdx] = { k: 7, tag: tag, open: true };
+      nodes[openerIdx] = { k: 7, tag: tag, open: true, ch: closer.ch };
       delims.splice(openerPos, 1);
       di--; // the closer shifted left in delims
     } else {
       opener.n -= use;
-      nodes.splice(openerIdx + 1, 0, { k: 7, tag: tag, open: true });
+      nodes.splice(openerIdx + 1, 0, { k: 7, tag: tag, open: true, ch: closer.ch });
       openerInserted = true;
       groupOf = rebuild();
       di = delims.findIndex(idx => nodes[idx].seq >= closerSeq);
@@ -1190,12 +1190,44 @@ function processEmphasis(nodes, delims) {
     const cIdx = delims[di];
     const cl = nodes[cIdx];
     if (cl.n === use) {
-      nodes[cIdx] = { k: 7, tag: tag, open: false };
+      nodes[cIdx] = { k: 7, tag: tag, open: false, ch: closer.ch };
       delims.splice(di, 1);
       // di stays: the next delimiter moved into this slot
     } else {
       cl.n -= use;
-      nodes.splice(cIdx, 0, { k: 7, tag: tag, open: false });
+      // Leftover placement (doc-11/doc-30): when a strong is closed by a
+      // run of 3+ asterisks and its content holds a same-char em whose
+      // closing delimiter is immediately followed by non-space text, the
+      // first min(leftover, 2) asterisks of the leftover render INSIDE
+      // the strong (marked's placement); otherwise they stay outside.
+      let inside = 0;
+      if (use === 2 && tag === 'strong') {
+        const tagPos = openerInserted ? openerIdx + 1 : openerIdx;
+        for (let j = tagPos + 1; j < cIdx - 1; j++) {
+          const nd = nodes[j];
+          if (nd.k === 7 && nd.tag === 'em' && !nd.open && nd.ch === closer.ch) {
+            const nx = nodes[j + 1];
+            if (nx && nx.k === 0 && nx.s && /\S/.test(nx.s[0])) { inside = Math.min(cl.n, 2); break; }
+          }
+        }
+      }
+      if (inside === 0) {
+        nodes.splice(cIdx, 0, { k: 7, tag: tag, open: false, ch: closer.ch });
+      } else if (inside === cl.n) {
+        // The whole leftover goes inside: text node, then the close tag
+        // replaces the delimiter node (fully consumed, leaves delims).
+        nodes.splice(cIdx, 0, { k: 0, s: closer.ch.repeat(inside) });
+        nodes[cIdx + 1] = { k: 7, tag: tag, open: false, ch: closer.ch };
+        // The splice shifted node indices: rebuild delims (as the other
+        // branches do) and resume at the first delimiter after this one.
+        groupOf = rebuild();
+        di = delims.findIndex(idx => nodes[idx].seq > closerSeq);
+        if (di < 0) di = delims.length;
+        continue;
+      } else {
+        cl.n -= inside;
+        nodes.splice(cIdx, 0, { k: 0, s: closer.ch.repeat(inside) }, { k: 7, tag: tag, open: false, ch: closer.ch });
+      }
       groupOf = rebuild();
       di = delims.findIndex(idx => nodes[idx].seq >= closerSeq);
       if (di < 0) di = delims.length;
