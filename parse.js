@@ -1034,7 +1034,15 @@ function parseBlocks(src) {
           }
           if (list.children.length > 0) {
             const prev = list.children[list.children.length - 1];
-            prev.blankBeforeNext = pendingBlank;
+            // A blank line separates the previous item from this one
+            // whether it was a true blank (pendingBlank) or a blank
+            // line directly inside the previous item — including a
+            // quote blank line, which sets blankDirect but not
+            // pendingBlank (doc-22: '>' blanks between items 17/18).
+            // blankDirect is cleared when a child is added to the
+            // item, so it only fires when the blank was the last thing
+            // in the previous item.
+            prev.blankBeforeNext = pendingBlank || prev.blankDirect;
           }
           const item = mkItem(marker.contentIndent - col);
           addChild(list, item);
