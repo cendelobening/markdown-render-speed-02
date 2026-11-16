@@ -1084,8 +1084,13 @@ function parseBlocks(src) {
     if (leaf && leaf.t === 'code' && leaf.fenced) {
       // A line that misses a '>' marker is outside the quote that holds
       // the fence, so the fence ends; a line that merely misses a list
-      // item's indent is lazy code content and the fence swallows it.
-      if (w.matched < w.cdepth && stack[w.matched].t === 'quote') {
+      // item's indent is lazy code content and the fence swallows it —
+      // except on the very first content line, where a missed item
+      // indent means the fence never took hold and closes empty
+      // (doc-17: the ```toml fence's first line is at column 0, while
+      // doc-02's first lines match the item and only a later line is
+      // lazy).
+      if (w.matched < w.cdepth && (stack[w.matched].t === 'quote' || (stack[w.matched].t === 'item' && leaf.lines.length === 0))) {
         closeFrom(w.matched, true);
         openNewBlocks(rem, col);
         continue;
