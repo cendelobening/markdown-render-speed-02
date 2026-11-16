@@ -1488,12 +1488,16 @@ function matchEmailExtended(text, i) {
     const c = text[end];
     // A lone '_' after the address blocks the autolink (gfm-632), but
     // '__' is an emphasis closer, not part of the address (doc-04), and
-    // so is a lone '_' followed by whitespace: it closes an emphasis
-    // that opened before the address (doc-31: '_warning ..._ write').
-    // A '_' at end of text, or followed by a word character, is part
-    // of the address and blocks the autolink.
+    // so is a lone '_' that closes an emphasis: it is followed by
+    // whitespace or punctuation, not by a word character or end of
+    // text (doc-31: '_ ..._ write'; doc-34: '_ ..._:'). A '_' at end
+    // of text, or followed by a word character, is part of the
+    // address and blocks the autolink.
     if (c === '_' && text[end + 1] === '_') return end;
-    if (c === '_' && (text[end + 1] === ' ' || text[end + 1] === '\t' || text[end + 1] === '\n')) return end;
+    if (c === '_') {
+      const nx = text[end + 1];
+      if (nx !== undefined && !isAlnumCh(nx) && nx !== '_') return end;
+    }
     if (isEmailChar(c) && '.,;:!?*~'.indexOf(c) === -1) return -1;
   }
   return end;
