@@ -713,7 +713,7 @@ function parseInline(src, refs) {
       if (ch === '*') { canOpen = left; canClose = right; }
       else { canOpen = left && (!right || (i > 0 && isUniPunct(s[i - 1]))); canClose = right && (!left || (j < n && isUniPunct(s[j]))); }
       if (canOpen || canClose) {
-        const idx = pushNode({ k: 4, ch, n: run, open: canOpen, close: canClose });
+        const idx = pushNode({ k: 4, ch, n: run, origN: run, open: canOpen, close: canClose });
         delims.push(idx);
       } else {
         text += s.slice(i, j);
@@ -729,7 +729,7 @@ function parseInline(src, refs) {
       if (run >= 1 && run <= 2) {
         const [left, right] = flankInfo(s, i, j);
         if (left || right) {
-          const idx = pushNode({ k: 4, ch: '~', n: run, open: left, close: right });
+          const idx = pushNode({ k: 4, ch: '~', n: run, origN: run, open: left, close: right });
           delims.push(idx);
           i = j; continue;
         }
@@ -1014,8 +1014,9 @@ function processEmphasis(nodes, delims) {
   // close, and whether the delimiter after it could open. A later
   // closer searching backwards is blocked from pairing with an opener
   // before that delimiter when it is a single delimiter, the inner
-  // emphasis was a strong, its opener could not close, and the
-  // delimiter after it could open (doc-07: *a **b**c* stays literal).
+  // opener could not close, and the delimiter after it could open --
+  // and either the inner emphasis was a strong, or the candidate opener
+  // is a run of 2+ (a strong is at stake: doc-01, **a *b*c* d**).
   // Delimiters inside a formed emphasis are marked and never used as
   // openers (an emphasis may enclose, never cross, another).
   const openersBottom = new Map(); // group:char -> {seq, use, openerClose, bottomOpen}
@@ -1034,8 +1035,11 @@ function processEmphasis(nodes, delims) {
       if (o.ch === closer.ch && o.open && groupOf[oIdx] === g) {
         // An inner emphasis recorded for this char lies between this
         // opener and the closer: the pair is blocked under the rule
-        // above (the closer is inside the inner emphasis's scope).
-        if (bottom && o.seq < bottom.seq && closer.n === 1 && bottom.use === 2 && !bottom.openerClose && bottom.bottomOpen) break;
+        // above (the closer is inside the inner emphasis's scope). The
+        // closer counts as single only when its run was originally a
+        // single delimiter -- a remainder of a longer run (e.g. the last
+        // '*' of '***' after a strong) does not block (doc-19).
+        if (bottom && o.seq < bottom.seq && closer.n === 1 && closer.origN === 1 && !bottom.openerClose && bottom.bottomOpen && (bottom.use === 2 || o.n >= 2)) break;
         // CommonMark rules 9/10: if either delimiter can both open and
         // close, a match is barred when the length sum is a multiple of 3
         // unless both lengths are multiples of 3.
