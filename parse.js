@@ -1418,6 +1418,31 @@ function parseBlocks(lines, endsNl) {
   // a list item (not nested in a blockquote inside it): a new item after
   // it DOES loosen the list (doc-09); a blank line nested in a blockquote
   // does not (cm-320).
+  let pendingLooseQuote = -1; // the smallest index, over the blank run,
+  // of the deepest blockquote on a blank line's descent path (-1 when
+  // the line carried no quote marker): a blank that dives into a
+  // blockquote inside an item is that quote's trailing blank, not a
+  // separator between the item's blocks (q1/q10); a raw blank line
+  // carries no marker and separates the item's own blocks (cm-325).
+  // Record a blank line that may loosen a list. The flags accumulate
+  // across consecutive blank lines (two `>` blanks still loosen, q5);
+  // the quote index takes the minimum (any line of the run that is a
+  // separator at the item's level makes the run one). `lists` is
+  // collected only on the first blank of the run -- the stack does not
+  // grow across blank lines.
+  function markBlank(inItem, isRaw, quoteIdx) {
+    if (pendingLoose) {
+      pendingLooseRaw = pendingLooseRaw || isRaw;
+      pendingLooseInItem = pendingLooseInItem || inItem;
+      if (quoteIdx < pendingLooseQuote) pendingLooseQuote = quoteIdx;
+    } else {
+      pendingLooseRaw = isRaw;
+      pendingLooseInItem = inItem;
+      pendingLooseQuote = quoteIdx;
+      pendingLoose = [];
+      for (let d = 1; d < stack.length; d++) if (stack[d].t === 'list') pendingLoose.push(stack[d]);
+    }
+  }
   // the last html block closed by its end marker, and that line's index:
   // a blank line immediately after it removes the trailing newline
   let closedHtml = null, closedHtmlEnd = -1;
@@ -1808,6 +1833,16 @@ function parseBlocks(lines, endsNl) {
     const raw = lines[ln];
     const { cur, depth } = descend(raw);
     const blank = curIsBlank(cur);
+    // The deepest blockquote on this line's descent path, taken before
+    // the close below can pop the stack (-1 when the line carried no
+    // quote marker): a blank line's loosen effect is decided by whether
+    // its own markers dive into a quote below the block it separates.
+    let blankQuote = -1;
+    if (blank) {
+      for (let d = depth - 1; d >= 1; d--) {
+        if (stack[d].t === 'quote') { blankQuote = d; break; }
+      }
+    }
     if (depth < stack.length) {
       // Fenced code content: a line that fails a LIST ITEM descent is
       // still code content (its container prefix is simply absent); only
@@ -1904,19 +1939,14 @@ function parseBlocks(lines, endsNl) {
         if (curIndent(cur) >= 4) { curStrip(cur, 4); leaf.lines.push(curText(cur)); }
         else {
           leaf.lines.push('');
-          pendingLoose = [];
-          pendingLooseRaw = /^[ \t]*$/.test(raw);
-          pendingLooseInItem = !!(leafParent && leafParent.t === 'item');
-          for (let d = 1; d < stack.length; d++) if (stack[d].t === 'list') pendingLoose.push(stack[d]);
+          markBlank(!!(leafParent && leafParent.t === 'item'), /^[ \t]*$/.test(raw), blankQuote);
         }
       }
       else if (leaf && leaf.t === 'html' && leaf.end !== 'blank') leaf.lines.push(curText(cur));
       else {
-        pendingLooseInItem = !!(leafParent && leafParent.t === 'item');
+        const inItem = !!(leafParent && leafParent.t === 'item');
         finalizeLeaf();
-        pendingLoose = [];
-        pendingLooseRaw = /^[ \t]*$/.test(raw);
-        for (let d = 1; d < stack.length; d++) if (stack[d].t === 'list') pendingLoose.push(stack[d]);
+        markBlank(inItem, /^[ \t]*$/.test(raw), blankQuote);
       }
       continue;
     }
@@ -1963,7 +1993,13 @@ function parseBlocks(lines, endsNl) {
       continue;
     }
     if (leaf && leaf.t === 'code' && !leaf.fenced) {
-      if (curIndent(cur) >= 4) { curStrip(cur, 4); leaf.lines.push(curText(cur)); continue; }
+      if (curIndent(cur) >= 4) {
+        curStrip(cur, 4); leaf.lines.push(curText(cur));
+        // A blank line the code just swallowed was code content, not a
+        // separator between blocks: it loosens nothing.
+        pendingLoose = null;
+        continue;
+      }
       finalizeLeaf();
     }
     if (leaf && leaf.t === 'html') {
@@ -1976,24 +2012,50 @@ function parseBlocks(lines, endsNl) {
       }
       continue;
     }
-    // a blank line separates two blocks inside one item (or two items):
-    // only the innermost list still open becomes loose. A blank line
-    // that is only blank after container markers (e.g. `>`) loosens a
-    // list only when the next block stays inside the same item, or when
-    // the blank line sat directly in an item (doc-09); a new list item
-    // after a blank line nested in a blockquote does not loosen it
-    // (cm-320 vs cm-259).
+    // A blank line loosens a list only when the next block lands inside
+    // it: as a new item of the list (the blank sat between two items),
+    // or as a block inside one of its items (the blank sat between two
+    // blocks of that item). A block that lands outside the list -- a
+    // sibling list, or a block in another container -- leaves it tight
+    // (doc-06/29/37: a blank `>` line before a sibling ordered list).
     if (pendingLoose) {
-      let isNewItem = false;
-      if (!pendingLooseRaw && !blank && !pendingLooseInItem) {
+      const top = stack[stack.length - 1];
+      let lm = null;
+      {
         const sv = curSave(cur);
         curSkipSpaces(cur, 3);
-        if (listMarker(cur)) isNewItem = true;
+        lm = listMarker(cur);
         curRestore(cur, sv);
       }
-      if (!isNewItem) {
-        for (let d = stack.length - 1; d >= 1; d--) {
-          if (stack[d].t === 'list' && pendingLoose.indexOf(stack[d]) >= 0) { stack[d].tight = false; break; }
+      if (lm && top.t === 'list' && top.ordered === lm.ordered &&
+          (lm.ordered ? top.delim === lm.delim : top.marker === lm.marker)) {
+        // A new item of the open list: the blank was between two items
+        // when it sat at the list's level -- a raw blank line, or one
+        // whose leaf sat directly in an item (doc-09). A blank nested
+        // in a blockquote inside an item does not count (cm-320).
+        if ((pendingLooseRaw || pendingLooseInItem) && pendingLoose.indexOf(top) >= 0) top.tight = false;
+      } else {
+        // Where does the next block land? A list item that does not
+        // reuse the open list starts a sibling list under that list's
+        // own parent in the tree; any other block lands in the stack's
+        // top container.
+        let place = top, placeIdx = stack.length - 1;
+        if (lm && top.t === 'list') {
+          place = stack[0]; placeIdx = 0;
+          for (let d = stack.length - 2; d >= 0; d--) {
+            if (stack[d].children.indexOf(top) >= 0) { place = stack[d]; placeIdx = d; break; }
+          }
+        }
+        // A block inside an item loosens that item's list only when the
+        // blank run holds a line that separates the item's own blocks:
+        // no blockquote sits on that line's descent path below the item
+        // (a blank that dives into a quote inside the item is the
+        // quote's own trailing blank, not a separator between the
+        // item's blocks, q1/q10). A raw blank line carries no marker,
+        // so it always separates (cm-325).
+        if (place.t === 'item' && pendingLooseQuote <= placeIdx) {
+          const listNode = stack[placeIdx - 1];
+          if (listNode && listNode.t === 'list' && pendingLoose.indexOf(listNode) >= 0) listNode.tight = false;
         }
       }
       pendingLoose = null;
