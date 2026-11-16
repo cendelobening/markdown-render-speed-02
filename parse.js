@@ -1184,6 +1184,7 @@ function parseInline(text, refs) {
   const n = text.length;
   const nodes = [];
   const brackets = [];
+  let inBracket = false;
   let rawBuf = '';
   let htmlBuf = '';
 
@@ -1354,6 +1355,7 @@ function parseInline(text, refs) {
       const b = { t: 'bracket', image: true, active: true, raw: '![', idx: nodes.length };
       nodes.push(b);
       brackets.push(b);
+      inBracket = true;
       i += 2;
       continue;
     }
@@ -1362,12 +1364,14 @@ function parseInline(text, refs) {
       const b = { t: 'bracket', image: false, active: true, raw: '[', idx: nodes.length };
       nodes.push(b);
       brackets.push(b);
+      inBracket = true;
       i++;
       continue;
     }
     if (c === ']') {
       flushText();
       const res = tryCloseBracket(text, i, nodes, brackets, refs);
+      inBracket = brackets.length > 0 && brackets.some((b) => b.active);
       if (res) { i = res.end; continue; }
       addText(']', ']');
       i++;
@@ -1388,7 +1392,7 @@ function parseInline(text, refs) {
       i += run;
       continue;
     }
-    const ext = tryExtendedAutolink(text, i, refs, brackets);
+    const ext = tryExtendedAutolink(text, i, refs, inBracket);
     if (ext) { pushNode(ext.node); i = ext.end; continue; }
     addText(c, escChar(c));
     i++;
@@ -1511,16 +1515,9 @@ function matchWww(text, i, inBracket) {
   }
   if (text[k] === '/') {
     let p = k;
-    // Inside link text the path stops at ']' so the outer bracket can close,
-    // unless that ']' sits right before a '(' opening a fresh scheme URL.
-    while (p < n) {
-      const c = text[p];
-      if (c === ' ' || c === '\t' || c === '\n' || c === '<' || c === '>') break;
-      if (inBracket && c === ']') {
-        if (text[p + 1] === '(' && startsSchemeUrl(text, p + 2)) { p++; continue; }
-        break;
-      }
-      if (c === '(' && startsSchemeUrl(text, p + 1)) break;
+    // Inside link text the path stops at ']' so the outer bracket can close.
+    while (p < n && text[p] !== ' ' && text[p] !== '\t' && text[p] !== '\n' && text[p] !== '<' && text[p] !== '>' && !(inBracket && text[p] === ']')) {
+      if (text[p] === '(' && startsSchemeUrl(text, p + 1)) break;
       p++;
     }
     k = p;
@@ -1548,16 +1545,9 @@ function matchSchemeAutolink(text, i, colon, inBracket) {
   const contentStart = colon + 1;
   let p = contentStart;
   // Inside link text the run stops at ']' so the outer bracket can close.
-  // A '(' that opens a fresh scheme:// URL ends the run before it, and a
-  // ']' right before such a '(' belongs to this autolink (doc-08).
-  while (p < n) {
-    const c = text[p];
-    if (c === ' ' || c === '\t' || c === '\n' || c === '<' || c === '>') break;
-    if (inBracket && c === ']') {
-      if (text[p + 1] === '(' && startsSchemeUrl(text, p + 2)) { p++; continue; }
-      break;
-    }
-    if (c === '(' && startsSchemeUrl(text, p + 1)) break;
+  // A '(' that opens a fresh scheme:// URL ends the run before it.
+  while (p < n && text[p] !== ' ' && text[p] !== '\t' && text[p] !== '\n' && text[p] !== '<' && text[p] !== '>' && !(inBracket && text[p] === ']')) {
+    if (text[p] === '(' && startsSchemeUrl(text, p + 1)) break;
     p++;
   }
   const runEnd = p;
@@ -1591,11 +1581,11 @@ function matchSchemeAutolink(text, i, colon, inBracket) {
 }
 
 // Try an extended autolink (www., scheme:, email) starting at i.
-function tryExtendedAutolink(text, i, refs, brackets) {
-  const inBracket = brackets.length > 0 && brackets.some((b) => b.active);
+function tryExtendedAutolink(text, i, refs, inBracket) {
   const n = text.length;
+  // An autolink never starts in the middle of a word.
+  if (i > 0 && isAlnumCh(text[i - 1])) return null;
   if (text.startsWith('www.', i)) {
-    if (i > 0 && isAlnumCh(text[i - 1])) return null;
     const end = matchWww(text, i, inBracket);
     if (end === -1) return null;
     const raw = text.slice(i, end);
