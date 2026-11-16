@@ -1291,6 +1291,46 @@ function curSkipSpaces(c, max) {
 }
 // Consume exactly `n` columns of indent (caller has verified enough exists).
 function curStrip(c, n) { curSkipSpaces(c, n); }
+// After a `>` marker, the following whitespace is tab-expanded from the
+// marker's column in the quote's OWN content coordinates (marked's
+// blockquoteMarkerWhitespace + J, applied per quote level in its recursive
+// pass): `startCol` is the column just after the `>` there, i.e. the
+// `>`'s column within its enclosing content + 1. One column of the
+// expanded whitespace is the marker's own space; the rest stays as
+// content indent (pending spaces). `> \tindented` -> 2 leading spaces,
+// and `> > \tindented` -> 2 as well (the inner `>` sits at column 0 of
+// the outer quote's content, so its tab expands from column 1, not
+// from the raw line column 3). The cursor column advances in the raw
+// line's coordinates; the pending spaces count in content coordinates.
+function skipQuoteSpace(c, startCol) {
+  let p = c.pos, ocol = c.col, w = 0, scol = startCol;
+  while (p < c.s.length) {
+    const ch = c.s.charCodeAt(p);
+    if (ch === 32) { p++; ocol++; scol++; w++; }
+    else if (ch === 9) { const tw = 4 - (scol % 4); p++; ocol += 4 - (ocol % 4); scol += tw; w += tw; }
+    else break;
+  }
+  if (w === 0) return;
+  c.pos = p; c.col = ocol;
+  c.pre = w - 1;
+}
+// Strip up to `n` leading whitespace CHARACTERS from a fenced-code content
+// line, mirroring marked's Dt indent compensation: each space or tab counts
+// as one character, and a tab is consumed wholly (no leftover spaces).
+// A tab at the start of a content line is therefore removed outright when
+// the fence is indented (``  ```\n\tindented `` -> `indented`), while a
+// tab after enough spaces survives (``  ```\n  \tx `` -> `\tx`).
+function stripFenceIndent(c, n) {
+  let left = n;
+  while (left > 0) {
+    if (c.pre > 0) { const take = Math.min(c.pre, left); c.pre -= take; left -= take; continue; }
+    if (c.pos >= c.s.length) break;
+    const ch = c.s.charCodeAt(c.pos);
+    if (ch === 32) { c.pos++; c.col++; left--; }
+    else if (ch === 9) { c.col += 4 - (c.col % 4); c.pos++; left--; }
+    else break;
+  }
+}
 // Advance `k` columns through any characters (markers, text).
 function curAdvance(c, k) {
   while (k > 0) {
@@ -1306,7 +1346,8 @@ function curAdvance(c, k) {
 }
 function curText(c) { return (c.pre > 0 ? ' '.repeat(c.pre) : '') + c.s.slice(c.pos); }
 function curIsBlank(c) {
-  if (c.pre > 0) return false;
+  // Pending spaces (pre) are still whitespace: a line holding only spaces
+  // (whether from the line itself or from a partially consumed tab) is blank.
   for (let p = c.pos; p < c.s.length; p++) {
     const ch = c.s.charCodeAt(p);
     if (ch !== 32 && ch !== 9) return false;
@@ -1534,7 +1575,7 @@ function parseBlocks(lines, endsNl) {
       if (cont.t === 'quote') {
         const sv = curSave(cur);
         curSkipSpaces(cur, 3);
-        if (curPeek(cur) === '>') { curAdvance(cur, 1); curSkipSpaces(cur, 1); depth++; continue; }
+        if (curPeek(cur) === '>') { const qcol = cur.col - sv.col; curAdvance(cur, 1); skipQuoteSpace(cur, qcol + 1); depth++; continue; }
         curRestore(cur, sv); break;
       }
       if (cont.t === 'item') {
@@ -1766,8 +1807,9 @@ function parseBlocks(lines, endsNl) {
       const q = { t: 'quote', children: [] };
       addNode(q);
       stack.push(q);
+      const qcol = cur.col - save.col;
       curAdvance(cur, 1);
-      curSkipSpaces(cur, 1);
+      skipQuoteSpace(cur, qcol + 1);
       if (!curIsBlank(cur)) startBlock(cur, ln, advance);
       return true;
     }
@@ -1930,7 +1972,7 @@ function parseBlocks(lines, endsNl) {
           closeTo(depth - 1);
         } else {
           curRestore(cur, sv);
-          curStrip(cur, leaf.fenceIndent);
+          stripFenceIndent(cur, leaf.fenceIndent);
           leaf.lines.push(curText(cur));
           continue;
         }
@@ -2025,7 +2067,7 @@ function parseBlocks(lines, endsNl) {
         }
       }
       curRestore(cur, sv);
-      curStrip(cur, leaf.fenceIndent);
+      stripFenceIndent(cur, leaf.fenceIndent);
       // Inside a container (list item / blockquote), a leading tab in
       // fenced code content expands to spaces (to the next multiple of 4
       // from its column); at top level the tab is kept verbatim. The
