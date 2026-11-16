@@ -1736,10 +1736,19 @@ function parseBlocks(lines, endsNl) {
           closeTo(depth - 1);
           continue;
         }
-        curRestore(cur, sv);
-        curStrip(cur, leaf.fenceIndent);
-        leaf.lines.push(curText(cur));
-        continue;
+        if (leaf.lines.length === 0) {
+          // The first content line fails the item descent: the fence is
+          // empty. Close it (and the item) and fall through so this line
+          // starts a top-level block (doc-17/21/36/38); a later 0-indent
+          // line IS code content (doc-02).
+          curRestore(cur, sv);
+          closeTo(depth - 1);
+        } else {
+          curRestore(cur, sv);
+          curStrip(cur, leaf.fenceIndent);
+          leaf.lines.push(curText(cur));
+          continue;
+        }
       }
       // A line that starts a block is not a lazy paragraph continuation:
       // the containers close and the block starts at the level where the
