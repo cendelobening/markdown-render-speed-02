@@ -641,6 +641,73 @@ function scanEmailAt(s, i, allowTrailingUnderscore) {
   return dEnd;
 }
 
+// Would the bracket whose label is [textStart, closeIdx) form a link
+// closing at `]` closeIdx? Mirrors marked's link/reflink decision: the
+// label must be consumable and the tail must resolve (inline destination,
+// full/collapsed reference, or shortcut reference).
+function linkWouldForm(s, textStart, closeIdx, refs) {
+  if (!labelConsumable(s, textStart, closeIdx)) return false;
+  const after = s.charCodeAt(closeIdx + 1);
+  if (after === 40) return parseLinkTail(s, closeIdx + 2, true) !== null;
+  if (after === 91) {
+    let j = closeIdx + 2, ok = false, bad = false;
+    while (j < s.length) {
+      const c = s.charCodeAt(j);
+      if (c === 92 && j + 1 < s.length && isPunct(s[j + 1])) { j += 2; continue; }
+      if (c === 91) { bad = true; break; }
+      if (c === 93) { ok = true; break; }
+      j++;
+    }
+    if (!ok || bad) return false;
+    const rawLabel = s.slice(closeIdx + 2, j);
+    const label = rawLabel.length === 0 ? normalizeLabel(s.slice(textStart, closeIdx)) : normalizeLabel(rawLabel);
+    return refs.has(label);
+  }
+  return refs.has(normalizeLabel(s.slice(textStart, closeIdx)));
+}
+
+// Whether a link label [start, end) is consumable by marked's link-label
+// regex. Backtick runs must pair up left to right: each run forms a
+// lenient code span with the next run (the label regex's code-span
+// alternative takes any two consecutive runs, opener and closer lengths
+// independent), and a final unpaired run is consumable only when it is
+// 2+ backticks immediately before the closing `]`. A single backtick
+// that pairs with nothing and sits before the `]` kills the link
+// (cm-342/525/537, doc-18), while `` ``url` `` pairs fine (doc-09/14)
+// and `` `` a ` b `` `` pairs with a 2-run before `]` (doc-20's [be...]).
+// Escaped chars and nested [...] spans count as consumable units.
+function labelConsumable(s, start, end) {
+  let i = start;
+  let runLen = 0, runPos = -1; // an unpaired backtick run awaiting a partner
+  while (i < end) {
+    const c = s.charCodeAt(i);
+    if (c === 92 && i + 1 < end) { i += 2; continue; } // escaped char
+    if (c === 91) { // nested [...] span: skip it balanced
+      let depth = 1, j = i + 1;
+      while (j < end && depth > 0) {
+        if (s.charCodeAt(j) === 92) { j += 2; continue; }
+        if (s.charCodeAt(j) === 91) depth++;
+        else if (s.charCodeAt(j) === 93) depth--;
+        j++;
+      }
+      if (depth === 0) { i = j; continue; }
+      return false;
+    }
+    if (c === 96) {
+      let j = i;
+      while (j < end && s.charCodeAt(j) === 96) j++;
+      const len = j - i;
+      if (runLen > 0) { runLen = 0; runPos = -1; } // paired with the pending run
+      else { runLen = len; runPos = i; }
+      i = j; continue;
+    }
+    if (c === 93) return false; // bare ] inside the label: not consumable
+    i++;
+  }
+  if (runLen === 0) return true;
+  return runLen >= 2 && runPos + runLen === end;
+}
+
 // ---------------------------------------------------------------------------
 // Main inline scanner: builds a node list, then emphasis + rendering.
 // ---------------------------------------------------------------------------
@@ -678,12 +745,14 @@ function parseInline(src, refs) {
       let j = i;
       while (j < n && s.charCodeAt(j) === 96) j++;
       const run = j - i;
-      // find a matching run; a code span cannot span a `]` that closes a
-      // link's text (an open bracket + `]` followed by '(' or '[') once an
-      // earlier backtick run in this bracket already failed to match
-      // (doc-28: an unmatched `` `` `` before a lone ` keeps the ` literal
-      // so the link forms; cm-342/525/537: the first backtick may still
-      // span the `]` and kill the link).
+      // find a matching run; a code span must not swallow the `]` of a
+      // link that will form (the link regex wins at `[`, and its label is
+      // lexed recursively, where the backticks stay literal -- doc-09/14/35:
+      // `` ``url` `` pairs leniently in the label, so the link forms and no
+      // code span may span past its `]`). When the link would not form
+      // (label unconsumable or tail invalid), the span may cross the `]`
+      // and kill the link (cm-342/525/537). doc-28's lone backtick after a
+      // failed `` `` `` run is the same decision: the link forms, so break.
       let k = j, found = -1;
       while (k < n) {
         const kc = s.charCodeAt(k);
@@ -692,8 +761,12 @@ function parseInline(src, refs) {
           while (m < n && s.charCodeAt(m) === 96) m++;
           if (m - k === run) { found = k; break; }
           k = m;
-        } else if (kc === 93 && unmatchedBacktickInBracket && brackets.length > 0 && k + 1 < n && (s.charCodeAt(k + 1) === 40 || s.charCodeAt(k + 1) === 91)) {
-          break;
+        } else if (kc === 93 && brackets.length > 0) {
+          const bi = brackets[brackets.length - 1];
+          const op = nodes[bi];
+          const ts = op.img ? op.pos + 2 : op.pos + 1;
+          if (linkWouldForm(s, ts, k, refs)) break;
+          k++;
         } else k++;
       }
       if (found < 0) {
@@ -911,7 +984,7 @@ function tryFormLink(nodes, brackets, refs, s, i, unmatchedBacktick) {
     return 0;
   }
   const textStart = opener.img ? opener.pos + 2 : opener.pos + 1;
-  let dest = null, title = null, next = 0;
+  let dest = null, title = null, next = 0, viaShortcut = false;
   const after = s.charCodeAt(i + 1);
   if (after === 40) { // inline link: '(' immediately after ']'
     const tail = parseLinkTail(s, i + 2, true);
@@ -938,40 +1011,29 @@ function tryFormLink(nodes, brackets, refs, s, i, unmatchedBacktick) {
   if (dest === null) { // shortcut reference (also the fallback after a failed inline link)
     const label = normalizeLabel(s.slice(textStart, i));
     const ref = refs.get(label);
-    if (ref) { dest = ref.dest; title = ref.title; next = i + 1; }
+    if (ref) { dest = ref.dest; title = ref.title; next = i + 1; viaShortcut = true; }
   }
   if (dest === null) {
     // failure: the opener can never form a link; drop it from the stack.
     brackets.splice(bi, 1);
     return 0;
   }
-  // Marked quirk (doc-16/18/20): a link does not form when its text holds
-  // an unmatched backtick run together with a `*`/`_` delimiter, or a
-  // code span whose content holds a backtick followed by a `*`/`_`
-  // delimiter. An escaped backtick does not count (it never sets the flag).
-  {
-    let hasDelim = false, tickCodeIdx = -1, delimAfterTickCode = false;
+  // marked's link-label regex only accepts a label whose backtick runs
+  // pair up (lenient code spans) or end as 2+ before the `]`; an
+  // unconsumable label kills an inline or full-reference link outright
+  // (doc-18, cm-342/525/537), while `` ``url` `` pairs fine (doc-09/14)
+  // and a trailing 2-run before `]` is fine (doc-20's [be...]).
+  // Shortcut references use a simpler label regex without the backtick
+  // rules, so they skip this check. When the link fails, the `*`/`_`
+  // delimiters in its text stay literal (marked's emStrong masking hides
+  // the failed inline-link shape from emphasis), so disable them.
+  if (!viaShortcut && !labelConsumable(s, textStart, i)) {
     for (let a = openerIdx + 1; a < nodes.length; a++) {
       const nd = nodes[a];
-      if (nd.k === 4 && (nd.ch === '*' || nd.ch === '_')) hasDelim = true;
-      if (nd.k === 1 && nd.s.indexOf('`') >= 0) tickCodeIdx = a;
+      if (nd.k === 4 && (nd.ch === '*' || nd.ch === '_')) { nd.open = false; nd.close = false; }
     }
-    if (tickCodeIdx >= 0) {
-      for (let a = tickCodeIdx + 1; a < nodes.length; a++) {
-        const nd = nodes[a];
-        if (nd.k === 4 && (nd.ch === '*' || nd.ch === '_')) { delimAfterTickCode = true; break; }
-      }
-    }
-    if ((unmatchedBacktick && hasDelim) || delimAfterTickCode) {
-      // the link fails, and the `*`/`_` delimiters in its text do not
-      // form emphasis either (they stay literal, doc-16/18/20).
-      for (let a = openerIdx + 1; a < nodes.length; a++) {
-        const nd = nodes[a];
-        if (nd.k === 4 && (nd.ch === '*' || nd.ch === '_')) { nd.open = false; nd.close = false; }
-      }
-      brackets.splice(bi, 1);
-      return 0;
-    }
+    brackets.splice(bi, 1);
+    return 0;
   }
   // Success: replace the opener token with the link token; append a close
   // marker at the end of the current token list.
@@ -1360,48 +1422,28 @@ function extractRefs(text, refs) {
   return text.slice(i);
 }
 
-// Split a table row line into cells: split on unescaped '|' outside code
-// spans; drop a leading/trailing empty cell when the line starts/ends with
-// an (unescaped) pipe. Returns null when the line holds no pipe at all.
+// Split a table row line into cells: split on a `|` preceded by an even
+// number of backslashes; a `|` preceded by an odd number stays literal.
+// Returns null when the line holds no pipe at all.
 function splitTableRow(line) {
-  const cells = [];
-  let cur = '', i = 0, n = line.length, hasPipe = false;
-  while (i < n) {
-    const c = line.charCodeAt(i);
-    if (c === 92 && i + 1 < n && line.charCodeAt(i + 1) === 124) { cur += '|'; i += 2; continue; }
-    if (c === 96) {
-      let j = i;
-      while (j < n && line.charCodeAt(j) === 96) j++;
-      const run = j - i;
-      let k = j, found = -1;
-      while (k < n) {
-        if (line.charCodeAt(k) === 96) {
-          let m = k;
-          while (m < n && line.charCodeAt(m) === 96) m++;
-          if (m - k === run) { found = k; break; }
-          k = m;
-        } else k++;
-      }
-      if (found < 0) { cur += line.slice(i, j); i = j; continue; }
-      // copy the span, resolving \| -> | inside it (the pipe is an escape
-      // for the table parser even inside a code span)
-      const span = line.slice(i, found + run);
-      let spanOut = '';
-      for (let q = 0; q < span.length; q++) {
-        if (span.charCodeAt(q) === 92 && q + 1 < span.length && span.charCodeAt(q + 1) === 124) { spanOut += '|'; q++; continue; }
-        spanOut += span[q];
-      }
-      cur += spanOut; i = found + run; continue;
-    }
-    if (c === 124) { cells.push(cur); cur = ''; hasPipe = true; i++; continue; }
-    cur += line[i]; i++;
+  // marked's de(): a `|` is a separator unless preceded by an odd number
+  // of backslashes, in which case it stays a literal `|` in the cell
+  // (unescaped to `|` below); code spans do NOT protect pipes -- `a | b`
+  // splits, `a \| b` does not, and `a \\| b` splits (two backslashes).
+  if (line.indexOf('|') < 0) return null;
+  let t = '';
+  for (let i = 0; i < line.length; i++) {
+    if (line.charCodeAt(i) === 124) { // |
+      let bs = 0;
+      for (let p = i - 1; p >= 0 && line.charCodeAt(p) === 92; p--) bs++;
+      t += (bs % 2 === 1) ? '|' : ' |';
+    } else t += line[i];
   }
-  cells.push(cur);
-  if (!hasPipe) return null;
-  // drop leading/trailing empty cells from edge pipes
-  if (cells.length > 1 && cells[0].trim() === '') cells.shift();
-  if (cells.length > 1 && cells[cells.length - 1].trim() === '') cells.pop();
-  return cells.map((x) => x.trim());
+  const cells = t.split(' |');
+  // drop a leading empty cell and a trailing empty cell (edge pipes)
+  if (cells.length > 0 && cells[0].trim() === '') cells.shift();
+  if (cells.length > 0 && cells[cells.length - 1].trim() === '') cells.pop();
+  return cells.map((x) => x.trim().replace(/\\\|/g, '|'));
 }
 // Is this split row a delimiter row? Returns the alignment array or null.
 function delimiterAlign(cells) {
